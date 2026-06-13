@@ -11,3 +11,10 @@ def test_build_document_basic(sample_content):
     assert doc.core_properties.title == "Test Doc"
     assert "Heading 1" in paragraphs
     assert "A paragraph" in paragraphs
+
+
+def test_build_document_settings(sample_content):
+    doc = _build_document(sample_content)
+    xml = doc.settings.element.xml
+    assert "updateFields" in xml
+    assert 'w:val="true"' in xml

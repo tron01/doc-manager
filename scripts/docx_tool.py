@@ -1113,6 +1113,16 @@ def _build_document(content_data, theme_override=None):
     if footer_config and target_section < len(doc.sections):
         _apply_footer(doc, target_section, theme, footer_config)
 
+    # Force fields (like TOC) to update automatically on open
+    try:
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        update_fields = OxmlElement('w:updateFields')
+        update_fields.set(qn('w:val'), 'true')
+        doc.settings.element.append(update_fields)
+    except Exception as e:
+        print(f"Warning: Failed to inject updateFields setting: {e}", file=sys.stderr)
+
     return doc
 
 
