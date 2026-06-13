@@ -1,9 +1,9 @@
 ---
 name: doc-manager
-description: Create and edit Microsoft Word (.docx) documents locally. Supports professional document generation with themes, cover pages, TOC, tables, callouts, and code blocks. Can edit documents by inserting/replacing sections or updating tables. Saves to the Windows Downloads folder by default. Use when the user asks to create a Word document, write a report, generate a .docx file, or edit an existing Word document.
+description: Create and edit Microsoft Word (.docx) and PDF documents locally. Supports batch generation, themes, cover pages, TOC, tables, images, charts, callouts, and code blocks. Can edit documents by inserting/replacing sections. Saves to the Windows Downloads folder by default. Use when the user asks to create a Word document or PDF, write a report, generate .docx files, or perform bulk document generation.
 ---
 
-# Doc Manager v2.0 - Professional AI Document Generation
+# Doc Manager v3.0 - Professional AI Document Generation
 
 This skill uses a Python script (`scripts/docx_tool.py`) powered by `python-docx` to create and manipulate professional Word documents. Construct a JSON representation of the structure, and the tool builds the `.docx`.
 
@@ -27,6 +27,12 @@ TOOL validate --content content.json
 
 # 2. Create a new document
 TOOL create --title "Document_Title" --content content.json --theme professional --output-dir ~/Downloads
+
+# 2b. Create a PDF instead of DOCX
+TOOL create --title "Document_Title" --content content.json --output-format pdf
+
+# 2c. Batch create documents from a template and CSV data
+TOOL batch --template template.json --variables data.csv --output-format pdf
 
 # 3. Get document info (useful before editing)
 TOOL info --file ~/Downloads/Existing.docx --output info.json
@@ -102,6 +108,12 @@ Note: Default values (`"bold": false`, `"italic": false`, `"theme": "professiona
 | `executive_summary` | `text` | Blue-bordered shaded summary box. |
 | `note` / `warning` / `important` | `text` | Callout boxes with icons. Optional `title`. |
 | `page_break` | - | Forces a page break. |
+| `image` | `path` | Embeds an image. Optional `width` (in inches), `alignment` (`center`\|`right`), `caption`. |
+| `chart` | `chart_type`, `data` | Embeds a matplotlib chart. Types: `bar`, `pie`, `line`. `data` must contain `labels` and `values` or `datasets`. Optional `title`. |
+
+## Template Substitution
+
+For batch generation or single creation, `{{variable_name}}` syntax can be used in your JSON templates. The variables will be resolved using the `--variables` flag.
 
 ## Editing Existing Documents
 

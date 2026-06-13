@@ -27,6 +27,9 @@ import datetime
 import json
 import os
 import sys
+import subprocess
+import shutil
+import csv
 
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -46,6 +49,7 @@ SUPPORTED_BLOCK_TYPES = {
     "cover_page", "toc", "executive_summary",
     "note", "warning", "important",
     "code", "checklist", "timeline", "page_break",
+    "image", "chart",
 }
 
 
@@ -761,6 +765,119 @@ def _add_page_break(doc):
     doc.add_page_break()
 
 
+def _add_image_block(doc, theme, block):
+    """Add an image with optional caption and alignment."""
+    path = block.get("path")
+    if not path or not os.path.isfile(path):
+        print(f"Warning: Image not found at '{path}', skipping.", file=sys.stderr)
+        return
+
+    width = block.get("width")
+    
+    try:
+        if width:
+            picture = doc.add_picture(path, width=Inches(float(width)))
+        else:
+            picture = doc.add_picture(path)
+            
+        # Alignment
+        alignment_str = block.get("alignment", "center").lower()
+        if alignment_str == "center":
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        elif alignment_str == "right":
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            
+        # Caption
+        caption_text = block.get("caption")
+        if caption_text:
+            caption = doc.add_paragraph(caption_text)
+            if alignment_str == "center":
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif alignment_str == "right":
+                caption.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            for run in caption.runs:
+                _set_run_font(run, theme["body_font"], theme["body_size"] - 1, italic=True, color="666666")
+    except Exception as e:
+        print(f"Warning: Failed to add image '{path}' - {e}", file=sys.stderr)
+
+
+def _add_chart_block(doc, theme, block):
+    """Add a matplotlib chart as an image."""
+    try:
+        import matplotlib.pyplot as plt
+        import io
+    except ImportError:
+        print("Warning: matplotlib not installed. Cannot render charts. Install with: pip install matplotlib", file=sys.stderr)
+        return
+
+    chart_type = block.get("chart_type", "bar")
+    title = block.get("title", "")
+    data = block.get("data", {})
+    labels = data.get("labels", [])
+    
+    fig, ax = plt.subplots(figsize=(6, 4))
+    
+    # Theme colors mapping
+    accent_primary = "#" + theme.get("accent_primary", "1F4E79")
+    accent_secondary = "#" + theme.get("accent_secondary", "2F75B5")
+    colors = [accent_primary, accent_secondary, "#5B9BD5", "#9DC3E6"]
+    
+    if chart_type == "bar":
+        values = data.get("values", [])
+        if values:
+            ax.bar(labels, values, color=accent_primary)
+        elif "datasets" in data:
+            import numpy as np
+            datasets = data["datasets"]
+            x = np.arange(len(labels))
+            width = 0.8 / len(datasets)
+            for i, ds in enumerate(datasets):
+                ax.bar(x + i*width - width*(len(datasets)-1)/2, ds.get("values", []), width, label=ds.get("label", ""), color=colors[i % len(colors)])
+            ax.legend()
+    elif chart_type == "pie":
+        values = data.get("values", [])
+        if values:
+            ax.pie(values, labels=labels, autopct='%1.1f%%', colors=colors)
+    elif chart_type == "line":
+        if "datasets" in data:
+            datasets = data["datasets"]
+            for i, ds in enumerate(datasets):
+                ax.plot(labels, ds.get("values", []), marker='o', label=ds.get("label", ""), color=colors[i % len(colors)])
+            ax.legend()
+        else:
+            values = data.get("values", [])
+            ax.plot(labels, values, marker='o', color=accent_primary)
+            
+    if title:
+        ax.set_title(title, color="#" + theme.get("text_color", "333333"))
+        
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    width = block.get("width")
+    try:
+        if width:
+            doc.add_picture(buf, width=Inches(float(width)))
+        else:
+            doc.add_picture(buf)
+            
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        caption_text = block.get("caption")
+        if caption_text:
+            caption = doc.add_paragraph(caption_text)
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in caption.runs:
+                _set_run_font(run, theme["body_font"], theme["body_size"] - 1, italic=True, color="666666")
+    except Exception as e:
+        print(f"Warning: Failed to add chart - {e}", file=sys.stderr)
+
+
 # ============================================================================
 # SECTION 6: LAYOUT — STYLES, METADATA, HEADER, FOOTER
 # ============================================================================
@@ -889,6 +1006,19 @@ def _apply_footer(doc, section_idx, theme, footer_config):
 # SECTION 7: DOCUMENT BUILDER
 # ============================================================================
 
+def _substitute_variables(data, variables):
+    """Recursively substitute {{key}} placeholders in all strings."""
+    if isinstance(data, str):
+        for key, value in variables.items():
+            data = data.replace(f"{{{{{key}}}}}", str(value))
+        return data
+    elif isinstance(data, list):
+        return [_substitute_variables(item, variables) for item in data]
+    elif isinstance(data, dict):
+        return {k: _substitute_variables(v, variables) for k, v in data.items()}
+    return data
+
+
 def _normalize_content(content_data):
     """Normalize content data to v2 format (backward compatible with v1 arrays)."""
     if isinstance(content_data, list):
@@ -931,6 +1061,10 @@ def _process_content_blocks(doc, theme, blocks):
             _add_timeline(doc, theme, block.get("items", []))
         elif block_type == "page_break":
             _add_page_break(doc)
+        elif block_type == "image":
+            _add_image_block(doc, theme, block)
+        elif block_type == "chart":
+            _add_chart_block(doc, theme, block)
         else:
             print(f"Warning: Unknown block type '{block_type}', skipping.", file=sys.stderr)
 
@@ -1195,9 +1329,63 @@ def _load_document(file_path):
 # SECTION 11: SUBCOMMAND HANDLERS
 # ============================================================================
 
+def _convert_to_pdf(docx_path, pdf_path=None):
+    """Convert .docx to .pdf using best available backend."""
+    if pdf_path is None:
+        pdf_path = os.path.splitext(docx_path)[0] + ".pdf"
+    
+    # Try docx2pdf (requires MS Word)
+    try:
+        from docx2pdf import convert
+        convert(docx_path, pdf_path)
+        return pdf_path
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"Warning: docx2pdf failed ({e}), trying LibreOffice...", file=sys.stderr)
+    
+    # Try LibreOffice headless
+    soffice = shutil.which("soffice")
+    if soffice:
+        out_dir = os.path.dirname(pdf_path) or "."
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "pdf",
+             "--outdir", out_dir, docx_path],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            generated = os.path.splitext(os.path.basename(docx_path))[0] + ".pdf"
+            generated_path = os.path.join(out_dir, generated)
+            if generated_path != pdf_path:
+                os.rename(generated_path, pdf_path)
+            return pdf_path
+    
+    print("Error: No PDF backend available.\n"
+          "  Install docx2pdf: pip install docx2pdf (requires MS Word)\n"
+          "  Or install LibreOffice: https://www.libreoffice.org/", file=sys.stderr)
+    sys.exit(1)
+
+
 def cmd_create(args):
     """Handle the 'create' subcommand."""
     content_data = _load_content_json(args.content)
+    
+    if hasattr(args, "variables") and args.variables:
+        if not os.path.isfile(args.variables):
+            print(f"Error: Variables file not found: {args.variables}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            with open(args.variables, "r", encoding="utf-8") as f:
+                if args.variables.endswith(".csv"):
+                    reader = csv.DictReader(f)
+                    variables = next(reader)
+                else:
+                    variables = json.load(f)
+            content_data = _substitute_variables(content_data, variables)
+        except Exception as e:
+            print(f"Error loading variables: {e}", file=sys.stderr)
+            sys.exit(1)
+
     doc = _build_document(content_data, theme_override=args.theme)
 
     output_dir = args.output_dir or DEFAULT_OUTPUT_DIR
@@ -1212,6 +1400,15 @@ def cmd_create(args):
     output_path = os.path.join(output_dir, f"{title}.docx")
     doc.save(output_path)
     print(f"Success! Document created: {output_path}")
+
+    if args.output_format in ("pdf", "both"):
+        pdf_path = os.path.join(output_dir, f"{title}.pdf")
+        print(f"Converting to PDF...")
+        _convert_to_pdf(output_path, pdf_path)
+        print(f"Success! PDF created: {pdf_path}")
+        
+        if args.output_format == "pdf" and not args.keep_docx:
+            os.remove(output_path)
 
 
 def cmd_edit(args):
@@ -1530,6 +1727,63 @@ def cmd_validate(args):
         print("Valid — no issues found.")
 
 
+def cmd_batch(args):
+    """Handle the 'batch' subcommand."""
+    if not os.path.isfile(args.variables):
+        print(f"Error: Variables CSV file not found: {args.variables}", file=sys.stderr)
+        sys.exit(1)
+        
+    template_data = _load_content_json(args.template)
+    output_dir = args.output_dir or DEFAULT_OUTPUT_DIR
+    os.makedirs(output_dir, exist_ok=True)
+    
+    success_count = 0
+    error_count = 0
+    
+    try:
+        with open(args.variables, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            
+            # Require _output_name column
+            if "_output_name" not in reader.fieldnames:
+                print("Error: CSV must contain an '_output_name' column", file=sys.stderr)
+                sys.exit(1)
+                
+            for i, row in enumerate(reader):
+                try:
+                    output_name = row.pop("_output_name")
+                    content_data = _substitute_variables(template_data, row)
+                    doc = _build_document(content_data, theme_override=args.theme)
+                    
+                    title = output_name
+                    for ext in (".docx", ".doc", ".pdf"):
+                        if title.lower().endswith(ext):
+                            title = title[:-len(ext)]
+                            break
+                            
+                    output_path = os.path.join(output_dir, f"{title}.docx")
+                    doc.save(output_path)
+                    print(f"Created: {output_path}")
+                    
+                    if args.output_format in ("pdf", "both"):
+                        pdf_path = os.path.join(output_dir, f"{title}.pdf")
+                        _convert_to_pdf(output_path, pdf_path)
+                        print(f"Created: {pdf_path}")
+                        if args.output_format == "pdf" and not args.keep_docx:
+                            os.remove(output_path)
+                            
+                    success_count += 1
+                except Exception as e:
+                    print(f"Error processing row {i+1} ({output_name}): {e}", file=sys.stderr)
+                    error_count += 1
+                    
+    except Exception as e:
+        print(f"Error reading CSV: {e}", file=sys.stderr)
+        sys.exit(1)
+        
+    print(f"\nBatch complete: {success_count} success, {error_count} errors.")
+
+
 # ============================================================================
 # SECTION 12: CLI ENTRYPOINT
 # ============================================================================
@@ -1551,6 +1805,30 @@ def main():
                           help="Document theme (default: professional)")
     p_create.add_argument("--output-dir", default=None,
                           help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
+    p_create.add_argument("--output-format", default="docx",
+                          choices=["docx", "pdf", "both"],
+                          help="Output format (default: docx)")
+    p_create.add_argument("--keep-docx", action="store_true",
+                          help="Keep intermediate .docx file when output format is pdf")
+    p_create.add_argument("--variables", default=None,
+                          help="Path to JSON or CSV variables file for template substitution")
+
+    # --- batch ---
+    p_batch = subparsers.add_parser("batch", help="Generate multiple documents from a template and CSV")
+    p_batch.add_argument("--template", required=True,
+                         help="Path to JSON template file")
+    p_batch.add_argument("--variables", required=True,
+                         help="Path to CSV variables file (must include _output_name column)")
+    p_batch.add_argument("--theme", default=None,
+                         choices=list(THEMES.keys()),
+                         help="Document theme (default: professional)")
+    p_batch.add_argument("--output-dir", default=None,
+                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
+    p_batch.add_argument("--output-format", default="docx",
+                         choices=["docx", "pdf", "both"],
+                         help="Output format (default: docx)")
+    p_batch.add_argument("--keep-docx", action="store_true",
+                         help="Keep intermediate .docx file when output format is pdf")
 
     # --- edit ---
     p_edit = subparsers.add_parser("edit", help="Edit an existing .docx document")
@@ -1609,6 +1887,8 @@ def main():
 
     if args.command == "create":
         cmd_create(args)
+    elif args.command == "batch":
+        cmd_batch(args)
     elif args.command == "edit":
         cmd_edit(args)
     elif args.command == "add-table":
