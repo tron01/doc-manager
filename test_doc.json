@@ -1,0 +1,45 @@
+{
+  "metadata": {"title": "Verification Document"},
+  "content": [
+    {
+      "type": "cover_page",
+      "title": "Verification Test",
+      "subtitle": "Checking TOC and Charts",
+      "author": "AI",
+      "date": "2026-06-13"
+    },
+    {
+      "type": "toc"
+    },
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "1. Chart Verification"
+    },
+    {
+      "type": "chart",
+      "chart_type": "bar",
+      "title": "Monthly Sales Data",
+      "data": {
+        "labels": ["Jan", "Feb", "Mar", "Apr", "May"],
+        "values": [10, 20, 15, 30, 25]
+      },
+      "width": 5.0,
+      "caption": "Figure 1: Bar chart showing monthly sales."
+    },
+    {
+      "type": "chart",
+      "chart_type": "line",
+      "title": "Trend Over Time",
+      "data": {
+        "labels": ["Q1", "Q2", "Q3", "Q4"],
+        "datasets": [
+          {"label": "Product A", "values": [100, 120, 150, 200]},
+          {"label": "Product B", "values": [80, 90, 110, 140]}
+        ]
+      },
+      "width": 5.0,
+      "caption": "Figure 2: Line chart with multiple datasets."
+    }
+  ]
+}
