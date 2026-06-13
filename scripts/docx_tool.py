@@ -26,6 +26,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import subprocess
 import shutil
@@ -90,18 +91,27 @@ def _detect_font(preferences=None):
     return result
 
 def _replace_in_paragraph(paragraph, find_text, replace_text):
-    """Replace text across multiple runs in a paragraph."""
+    """Replace text across multiple runs in a paragraph safely."""
     full = paragraph.text
     if find_text not in full:
         return 0
-    new_text = full.replace(find_text, replace_text)
-    if paragraph.runs:
-        for i, run in enumerate(paragraph.runs):
-            if i == 0:
-                run.text = new_text
-            else:
-                run.text = ""
-    return full.count(find_text)
+    count = full.count(find_text)
+    
+    # Try per-run replacement first (preserves 100% of formatting)
+    for run in paragraph.runs:
+        if find_text in run.text:
+            run.text = run.text.replace(find_text, replace_text)
+            
+    # If the text spanned multiple runs, it won't be fully replaced yet.
+    # Fallback to replacing the full paragraph text on the first run.
+    if find_text in paragraph.text:
+        new_text = paragraph.text.replace(find_text, replace_text)
+        if paragraph.runs:
+            paragraph.runs[0].text = new_text
+            for i in range(1, len(paragraph.runs)):
+                paragraph.runs[i].text = ""
+                
+    return count
 
 
 # ============================================================================
@@ -817,47 +827,49 @@ def _add_chart_block(doc, theme, block):
     
     fig, ax = plt.subplots(figsize=(6, 4))
     
-    # Theme colors mapping
-    accent_primary = "#" + theme.get("accent_primary", "1F4E79")
-    accent_secondary = "#" + theme.get("accent_secondary", "2F75B5")
-    colors = [accent_primary, accent_secondary, "#5B9BD5", "#9DC3E6"]
-    
-    if chart_type == "bar":
-        values = data.get("values", [])
-        if values:
-            ax.bar(labels, values, color=accent_primary)
-        elif "datasets" in data:
-            import numpy as np
-            datasets = data["datasets"]
-            x = np.arange(len(labels))
-            width = 0.8 / len(datasets)
-            for i, ds in enumerate(datasets):
-                ax.bar(x + i*width - width*(len(datasets)-1)/2, ds.get("values", []), width, label=ds.get("label", ""), color=colors[i % len(colors)])
-            ax.legend()
-    elif chart_type == "pie":
-        values = data.get("values", [])
-        if values:
-            ax.pie(values, labels=labels, autopct='%1.1f%%', colors=colors)
-    elif chart_type == "line":
-        if "datasets" in data:
-            datasets = data["datasets"]
-            for i, ds in enumerate(datasets):
-                ax.plot(labels, ds.get("values", []), marker='o', label=ds.get("label", ""), color=colors[i % len(colors)])
-            ax.legend()
-        else:
-            values = data.get("values", [])
-            ax.plot(labels, values, marker='o', color=accent_primary)
-            
-    if title:
-        ax.set_title(title, color="#" + theme.get("text_color", "333333"))
+    try:
+        # Theme colors mapping
+        accent_primary = "#" + theme.get("accent_primary", "1F4E79")
+        accent_secondary = "#" + theme.get("accent_secondary", "2F75B5")
+        colors = [accent_primary, accent_secondary, "#5B9BD5", "#9DC3E6"]
         
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
-    buf.seek(0)
-    plt.close(fig)
+        if chart_type == "bar":
+            values = data.get("values", [])
+            if values:
+                ax.bar(labels, values, color=accent_primary)
+            elif "datasets" in data:
+                import numpy as np
+                datasets = data["datasets"]
+                x = np.arange(len(labels))
+                width = 0.8 / len(datasets)
+                for i, ds in enumerate(datasets):
+                    ax.bar(x + i*width - width*(len(datasets)-1)/2, ds.get("values", []), width, label=ds.get("label", ""), color=colors[i % len(colors)])
+                ax.legend()
+        elif chart_type == "pie":
+            values = data.get("values", [])
+            if values:
+                ax.pie(values, labels=labels, autopct='%1.1f%%', colors=colors)
+        elif chart_type == "line":
+            if "datasets" in data:
+                datasets = data["datasets"]
+                for i, ds in enumerate(datasets):
+                    ax.plot(labels, ds.get("values", []), marker='o', label=ds.get("label", ""), color=colors[i % len(colors)])
+                ax.legend()
+            else:
+                values = data.get("values", [])
+                ax.plot(labels, values, marker='o', color=accent_primary)
+                
+        if title:
+            ax.set_title(title, color="#" + theme.get("text_color", "333333"))
+            
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+        buf.seek(0)
+    finally:
+        plt.close(fig)
     
     width = block.get("width")
     try:
@@ -1009,9 +1021,10 @@ def _apply_footer(doc, section_idx, theme, footer_config):
 def _substitute_variables(data, variables):
     """Recursively substitute {{key}} placeholders in all strings."""
     if isinstance(data, str):
-        for key, value in variables.items():
-            data = data.replace(f"{{{{{key}}}}}", str(value))
-        return data
+        def repl(match):
+            key = match.group(1)
+            return str(variables.get(key, match.group(0)))
+        return re.sub(r"\{\{(.*?)\}\}", repl, data)
     elif isinstance(data, list):
         return [_substitute_variables(item, variables) for item in data]
     elif isinstance(data, dict):
@@ -1115,8 +1128,6 @@ def _build_document(content_data, theme_override=None):
 
     # Force fields (like TOC) to update automatically on open
     try:
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
         update_fields = OxmlElement('w:updateFields')
         update_fields.set(qn('w:val'), 'true')
         doc.settings.element.append(update_fields)
@@ -1247,7 +1258,7 @@ def _find_heading_in_body(doc, heading_text):
             t = r.find(qn("w:t"))
             if t is not None and t.text:
                 full_text += t.text
-        if full_text.strip().lower() == heading_text.strip().lower():
+        if re.sub(r'\s+', ' ', full_text).strip().lower() == re.sub(r'\s+', ' ', heading_text).strip().lower():
             return i, style_val
     return None, None
 
@@ -1361,7 +1372,7 @@ def _convert_to_pdf(docx_path, pdf_path=None):
         result = subprocess.run(
             [soffice, "--headless", "--convert-to", "pdf",
              "--outdir", out_dir, docx_path],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=300
         )
         if result.returncode == 0:
             generated = os.path.splitext(os.path.basename(docx_path))[0] + ".pdf"
@@ -1448,13 +1459,27 @@ def cmd_edit(args):
         find_text = args.find
         replace_text = args.replace_with
         count = 0
-        for paragraph in doc.paragraphs:
-            count += _replace_in_paragraph(paragraph, find_text, replace_text)
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
+        
+        def replace_in_blocks(blocks):
+            nonlocal count
+            for block in blocks:
+                if hasattr(block, 'paragraphs'):
+                    for paragraph in block.paragraphs:
                         count += _replace_in_paragraph(paragraph, find_text, replace_text)
+                if hasattr(block, 'tables'):
+                    for table in block.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                for paragraph in cell.paragraphs:
+                                    count += _replace_in_paragraph(paragraph, find_text, replace_text)
+
+        # Replace in document body
+        replace_in_blocks([doc])
+        
+        # Replace in headers and footers
+        for section in doc.sections:
+            replace_in_blocks([section.header, section.footer])
+            
         if count == 0:
             print(f"Warning: Text '{find_text}' not found in the document.", file=sys.stderr)
         else:
